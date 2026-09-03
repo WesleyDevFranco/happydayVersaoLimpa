@@ -126,3 +126,32 @@ export type Photo = typeof photos.$inferSelect;
 export type NewPhoto = typeof photos.$inferInsert;
 export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
+
+/**
+ * Fixed-window request counters, keyed by "policy:identifier".
+ *
+ * Kept in SQLite rather than memory so the limit survives a restart — an
+ * in-process Map resets on every deploy, which is exactly when a scripted
+ * caller would get a fresh allowance. It also means no new dependency:
+ * the counter lives in the same file the sweep already backs up.
+ *
+ * A fixed window (rather than sliding) lets the whole check be one atomic
+ * UPSERT. The tradeoff is a burst of up to 2x the limit across a window
+ * boundary, which is irrelevant for the sizes here.
+ *
+ * Rows are pruned by the nightly sweep; nothing reads a stale one, since
+ * an expired window is reset on contact.
+ */
+export const rateLimits = sqliteTable(
+  "rate_limits",
+  {
+    /** "draft:203.0.113.7" — policy name and caller, colon-separated. */
+    key: text("key").primaryKey(),
+    count: integer("count").notNull().default(0),
+    /** Unix seconds when the current window opened. */
+    windowStart: integer("window_start").notNull(),
+  },
+  (t) => [index("rate_limits_window_idx").on(t.windowStart)],
+);
+
+export type RateLimitRow = typeof rateLimits.$inferSelect;

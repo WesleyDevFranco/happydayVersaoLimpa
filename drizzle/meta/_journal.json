@@ -8,6 +8,13 @@
       "when": 1787968293749,
       "tag": "0000_pink_the_hunter",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788398759427,
+      "tag": "0001_noisy_toxin",
+      "breakpoints": true
     }
   ]
 }
