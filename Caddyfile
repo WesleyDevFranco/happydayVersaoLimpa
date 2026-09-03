@@ -14,7 +14,14 @@
 		# Strict-Transport-Security "max-age=31536000; includeSubDomains"
 	}
 
-	reverse_proxy app:3000
+	# The app rate-limits by IP, so the address it sees has to be the one
+	# Caddy actually accepted the connection from. Setting (not appending)
+	# these overwrites anything the client sent: without it, a spoofed
+	# X-Forwarded-For would give every request a fresh allowance.
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+	}
 
 	log {
 		output file /data/access.log {
