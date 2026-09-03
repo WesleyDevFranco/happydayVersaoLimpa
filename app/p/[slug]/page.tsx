@@ -6,7 +6,7 @@ import { SiteExperience } from "@/components/SiteExperience";
 import { SiteConfigProvider } from "@/lib/config/context";
 import { interpolate } from "@/lib/config/schema";
 import { clientIp, consume, overBudget } from "@/lib/rate-limit";
-import { findPublishedSite } from "@/lib/sites";
+import { lookupSlug } from "@/lib/sites";
 
 /**
  * A published couple's site.
@@ -15,14 +15,21 @@ import { findPublishedSite } from "@/lib/sites";
  * pays, so there is no build-time list of them, and a site edited after
  * publishing must reflect the change immediately.
  *
- * Misses are rate limited per IP. Slugs carry 48 bits of suffix, so this
+ * Guesses are rate limited per IP. Slugs carry 48 bits of suffix, so this
  * is not what makes a scan hopeless — it is what stops one from costing us
  * a database round trip per guess, and what puts the attempt in the logs.
  *
+ * Only a slug that exists nowhere counts. Opening a gift whose hosting ran
+ * out is a real link arriving late, not a guess, and charging for it would
+ * punish exactly the innocent case: an old link resent in a family group,
+ * where everyone behind one carrier NAT clicks it at once.
+ *
  * The tradeoff is deliberate and worth stating: an address that has burned
  * its budget gets a 404 for valid links too, because the only way to skip
- * the lookup is to skip it before knowing the answer. Sixty misses an hour
- * is far past anything a person does with real links.
+ * the lookup is to skip it before knowing the answer. The window is short
+ * for that reason — against 2^48 a scanner is equally dead at five tries
+ * per ten minutes or five per day, so the longer window would buy nothing
+ * and cost an innocent an hour.
  */
 export const dynamic = "force-dynamic";
 
@@ -36,11 +43,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // Peeked, never spent: the page component below does the counting, so a
   // single request is one attempt rather than two.
   const blocked = overBudget("lookup", clientIp(await headers()));
-  const loaded = blocked ? null : findPublishedSite(slug);
+  const found = blocked ? null : lookupSlug(slug);
 
-  if (!loaded) return { title: "Site não encontrado" };
+  if (found?.state !== "published") return { title: "Site não encontrado" };
 
-  const { config } = loaded;
+  const { config } = found.loaded;
   const title = interpolate(config.meta.title, config.couple);
   const description = interpolate(config.meta.description, config.couple);
 
@@ -65,19 +72,18 @@ export default async function PublishedSitePage({ params }: Props) {
 
   const ip = clientIp(await headers());
   const blocked = overBudget("lookup", ip);
-  const loaded = blocked ? null : findPublishedSite(slug);
+  const found = blocked ? null : lookupSlug(slug);
 
-  if (!loaded) {
-    // Only misses cost anything, so opening a real gift — the overwhelming
-    // majority of traffic here — never spends a request. Answered with the
-    // same 404 either way: a distinct status would tell a scanner it had
+  if (found?.state !== "published") {
+    // Charged only for a slug that exists nowhere. Answered with the same
+    // 404 in every case: a distinct status would tell a scanner it had
     // found the edge of something.
-    if (!blocked) consume("lookup", ip);
+    if (found?.state === "unknown") consume("lookup", ip);
     notFound();
   }
 
   return (
-    <SiteConfigProvider config={loaded.config}>
+    <SiteConfigProvider config={found.loaded.config}>
       <SiteExperience />
     </SiteConfigProvider>
   );
