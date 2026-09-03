@@ -45,6 +45,16 @@ export const POLICIES = {
     windowSeconds: 3600,
     message: "muitos envios seguidos — espere alguns minutos e continue",
   },
+  /**
+   * Counts only *failed* /p/ lookups, so opening a real link never spends
+   * any of it. Sixty an hour is far past a person mistyping a URL or
+   * clicking a couple of expired gifts, and far under what a scan needs.
+   */
+  lookup: {
+    limit: 60,
+    windowSeconds: 3600,
+    message: "muitos links inválidos a partir daqui — tente de novo mais tarde",
+  },
 } as const satisfies Record<string, Policy>;
 
 export type PolicyName = keyof typeof POLICIES;
@@ -110,6 +120,34 @@ export function consume(
     retryAfter: Math.max(1, resetsAt - now),
     message,
   };
+}
+
+/**
+ * Whether `identifier` has already blown through `policy`, without spending
+ * anything itself.
+ *
+ * Separate from consume() so a caller can refuse the work *before* doing
+ * it, and so checking never pushes anyone further past their own limit.
+ * An expired window reads as under budget: the row is stale, and the next
+ * consume() will reset it.
+ */
+export function overBudget(
+  policy: PolicyName,
+  identifier: string,
+  now = Math.floor(Date.now() / 1000),
+): boolean {
+  const { limit, windowSeconds } = POLICIES[policy];
+
+  const row = sqlite
+    .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?")
+    .get(`${policy}:${identifier}`) as
+    | { count: number; window_start: number }
+    | undefined;
+
+  if (!row) return false;
+  if (now - row.window_start >= windowSeconds) return false;
+
+  return row.count > limit;
 }
 
 /**
