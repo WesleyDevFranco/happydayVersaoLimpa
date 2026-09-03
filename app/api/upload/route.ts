@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 
 import { db, photos, sites } from "@/lib/db";
 import { DRAFT_LIMITS, PLANS, isPlanId } from "@/lib/plans";
+import { clientIp, consume, tooManyRequests } from "@/lib/rate-limit";
 import {
   MAX_UPLOAD_BYTES,
   UploadError,
@@ -26,6 +27,12 @@ function fail(message: string, status: number) {
 }
 
 export async function POST(request: Request) {
+  // Checked before anything is read off the wire: the point is to stop a
+  // script from filling the volume, and buffering 15 MB first would defeat
+  // that. Keyed by IP rather than editToken, since tokens are free to mint.
+  const rate = consume("upload", clientIp(request.headers));
+  if (!rate.ok) return tooManyRequests(rate);
+
   // Reject oversized bodies before buffering them. This is a courtesy check
   // — the header is client-supplied — but it turns the common accidental
   // 200 MB video into a fast 413 instead of a slow one.
