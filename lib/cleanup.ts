@@ -2,7 +2,7 @@ import "server-only";
 
 import { and, eq, lt } from "drizzle-orm";
 
-import { db, sites } from "@/lib/db";
+import { db, rateLimits, sites } from "@/lib/db";
 import { deleteSiteFiles } from "@/lib/storage";
 
 /**
@@ -15,9 +15,17 @@ import { deleteSiteFiles } from "@/lib/storage";
  */
 export const DRAFT_TTL_DAYS = 30;
 
+/**
+ * Rate-limit rows are kept a little past their longest window so a counter
+ * is never dropped while it is still deciding anything. An hour's slack is
+ * plenty for the policies in lib/rate-limit.ts.
+ */
+const RATE_LIMIT_TTL_SECONDS = 2 * 3600;
+
 export interface SweepResult {
   drafts: number;
   expired: number;
+  rateLimits: number;
 }
 
 /**
@@ -54,5 +62,17 @@ export async function sweep(now = new Date()): Promise<SweepResult> {
     .where(and(eq(sites.status, "PUBLISHED"), lt(sites.expiresAt, nowSec)))
     .run();
 
-  return { drafts: stale.length, expired: expired.changes };
+  // Counters whose window closed long ago. Nothing reads them — an expired
+  // window resets on contact — so this is purely to stop the table growing
+  // one row per IP forever.
+  const counters = db
+    .delete(rateLimits)
+    .where(lt(rateLimits.windowStart, nowSec - RATE_LIMIT_TTL_SECONDS))
+    .run();
+
+  return {
+    drafts: stale.length,
+    expired: expired.changes,
+    rateLimits: counters.changes,
+  };
 }

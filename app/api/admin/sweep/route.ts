@@ -25,7 +25,8 @@ export async function POST(request: Request) {
   try {
     const result = await sweep();
     console.log(
-      `sweep: ${result.drafts} rascunhos removidos, ${result.expired} sites expirados`,
+      `sweep: ${result.drafts} rascunhos removidos, ${result.expired} sites expirados, ` +
+        `${result.rateLimits} contadores de limite descartados`,
     );
     return Response.json({ ok: true, ...result });
   } catch (error) {
