@@ -18,15 +18,22 @@ import { slugSuffix, slugifyNames } from "@/lib/tokens";
 /**
  * Picks a free slug derived from the couple's names.
  *
- * Collisions are common — plenty of couples share first names — so a short
- * hex suffix is appended until one sticks. Bounded, because an unbounded
- * loop against a unique index is how a webhook hangs forever.
+ * The random suffix is always appended, never only on collision. Handing
+ * the first couple of each name pair the bare "ana-e-joao" made that link
+ * guessable from the names alone, and a list of common Brazilian first
+ * names is a few thousand entries — every "first" site was findable
+ * without brute force at all.
+ *
+ * With 48 bits of suffix a collision is a lottery win, but the loop stays:
+ * it is cheap, and a unique index that can reject a publish deserves a
+ * retry rather than a crashed webhook. Bounded, because an unbounded loop
+ * against that index is how a webhook hangs forever.
  */
 function allocateSlug(author: string, recipient: string): string {
   const base = slugifyNames(author, recipient);
 
   for (let attempt = 0; attempt < 12; attempt++) {
-    const candidate = attempt === 0 ? base : `${base}-${slugSuffix()}`;
+    const candidate = `${base}-${slugSuffix()}`;
     const taken = db
       .select({ slug: sites.slug })
       .from(sites)
@@ -36,8 +43,9 @@ function allocateSlug(author: string, recipient: string): string {
     if (!taken) return candidate;
   }
 
-  // Twelve collisions means something is wrong with the base; fall back to
-  // something that cannot collide rather than failing the publish.
+  // Twelve collisions on a 2^48 space means the random source is broken,
+  // not that we were unlucky. Fall back to something that cannot collide
+  // rather than failing the publish.
   return `${base}-${Date.now().toString(36)}`;
 }
 
