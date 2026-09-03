@@ -46,13 +46,18 @@ export const POLICIES = {
     message: "muitos envios seguidos — espere alguns minutos e continue",
   },
   /**
-   * Counts only *failed* /p/ lookups, so opening a real link never spends
-   * any of it. Sixty an hour is far past a person mistyping a URL or
-   * clicking a couple of expired gifts, and far under what a scan needs.
+   * Counts only slugs that exist nowhere, so opening a real link — even an
+   * expired one — never spends any of it. Five is about as tight as a
+   * counter can be without catching someone reloading a broken link.
+   *
+   * The window is ten minutes rather than an hour on purpose. A slug holds
+   * 48 bits, so five guesses per ten minutes and five per day are equally
+   * hopeless for a scanner; the longer window would add no protection and
+   * would leave anyone caught by mistake locked out far longer.
    */
   lookup: {
-    limit: 60,
-    windowSeconds: 3600,
+    limit: 5,
+    windowSeconds: 600,
     message: "muitos links inválidos a partir daqui — tente de novo mais tarde",
   },
 } as const satisfies Record<string, Policy>;
