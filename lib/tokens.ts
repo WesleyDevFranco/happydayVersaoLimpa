@@ -32,8 +32,8 @@ const RESERVED = new Set([
  * Turns two names into a shareable slug: "Léo", "Ana" → "leo-e-ana".
  *
  * Accents are folded rather than dropped so "João" becomes "joao", not
- * "joo". A short random suffix is appended by the caller when the slug is
- * already taken — two different couples named the same thing is common.
+ * "joo". This is only the readable half: the caller always appends a
+ * random suffix, so the value returned here is never a slug on its own.
  */
 export function slugifyNames(author: string, recipient: string): string {
   const clean = (s: string) =>
@@ -51,7 +51,14 @@ export function slugifyNames(author: string, recipient: string): string {
   return base;
 }
 
-/** Four hex chars, appended when a slug collides. */
+/**
+ * Twelve hex chars from 6 random bytes — 48 bits, appended to every slug.
+ *
+ * Sized against enumeration, not collision. Four hex chars would settle
+ * collisions fine, but 65k guesses per name is a few minutes of scripted
+ * requests, and a published site holds photographs of real people and a
+ * letter they wrote. 2^48 makes a scan pointless instead of merely slow.
+ */
 export function slugSuffix(): string {
-  return randomBytes(2).toString("hex");
+  return randomBytes(6).toString("hex");
 }
