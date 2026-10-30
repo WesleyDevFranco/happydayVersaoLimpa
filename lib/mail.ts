@@ -1,6 +1,6 @@
 import "server-only";
 
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 
 import { env, mailConfigured } from "@/lib/env";
 
@@ -12,9 +12,9 @@ import { env, mailConfigured } from "@/lib/env";
  * caller logs failures loudly rather than swallowing them.
  */
 
-let transport: nodemailer.Transporter | null = null;
+let transport: Transporter | null = null;
 
-function getTransport(): nodemailer.Transporter | null {
+function getTransport(): Transporter | null {
   if (!mailConfigured) return null;
   transport ??= nodemailer.createTransport(env.SMTP_URL);
   return transport;
