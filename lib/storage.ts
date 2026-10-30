@@ -3,7 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
-import sharp, { type Metadata } from "sharp";
+import sharp, { type Metadata, type OutputInfo } from "sharp";
 
 import { env } from "@/lib/env";
 
@@ -65,21 +65,84 @@ export function resolveUploadPath(relativePath: string): string {
   return target;
 }
 
+type ImageFormat = "jpeg" | "png" | "webp" | "heic";
+
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * `ftyp` brands that mean HEVC inside a HEIF container. `mif1` stays out on
+ * purpose: it only says "some HEIF image", and AVIF files carry it too.
+ */
+const HEIC_BRANDS = new Set([
+  "heic",
+  "heix",
+  "hevc",
+  "hevx",
+  "heim",
+  "heis",
+  "hevm",
+  "hevs",
+]);
+
+/** Real `ftyp` boxes are under 100 bytes; no reason to walk a giant one. */
+const MAX_FTYP_BYTES = 256;
+
+/**
+ * Names the format from the file's leading bytes, or null if we don't take it.
+ *
+ * sharp picks a decoder by looking at the content, and it carries several we
+ * never want exposed to strangers — librsvg for SVG above all. Even
+ * `metadata()` runs them, so this has to happen first. Anyone can reach this
+ * code: a draft's editToken is free to mint.
+ */
+function sniffImageFormat(input: Buffer): ImageFormat | null {
+  if (input.subarray(0, 3).equals(JPEG_MAGIC)) return "jpeg";
+  if (input.subarray(0, 8).equals(PNG_MAGIC)) return "png";
+
+  if (
+    input.toString("latin1", 0, 4) === "RIFF" &&
+    input.toString("latin1", 8, 12) === "WEBP"
+  ) {
+    return "webp";
+  }
+
+  if (input.toString("latin1", 4, 8) === "ftyp") {
+    const isHeicBrand = (at: number) =>
+      HEIC_BRANDS.has(input.toString("latin1", at, at + 4));
+
+    // Major brand at 8, minor version at 12, compatible brands from 16 on.
+    if (isHeicBrand(8)) return "heic";
+    const end = Math.min(
+      input.readUInt32BE(0),
+      MAX_FTYP_BYTES,
+      input.byteLength,
+    );
+    for (let at = 16; at + 4 <= end; at += 4) {
+      if (isHeicBrand(at)) return "heic";
+    }
+  }
+
+  return null;
+}
+
 /**
  * Validates, normalizes and stores one uploaded image.
  *
  * The pipeline, in order and for a reason:
  *
- *  1. `sharp()` parses the bytes. This is the real format check — a client's
- *     Content-Type is just a claim, and a `.jpg` that isn't an image dies here.
- *  2. `.rotate()` bakes in EXIF orientation. It has to happen *before*
+ *  1. Check the leading bytes against the formats we accept. A client's
+ *     Content-Type is just a claim, and this is what keeps an SVG named
+ *     `.jpg` away from sharp's decoders.
+ *  2. `sharp()` parses the bytes. A `.jpg` that isn't an image dies here.
+ *  3. `.rotate()` bakes in EXIF orientation. It has to happen *before*
  *     metadata is dropped, or every photo shot in portrait comes out sideways.
- *  3. Resize down (never up) to MAX_EDGE.
- *  4. Re-encode as JPEG. sharp writes no metadata unless asked, so the EXIF
+ *  4. Resize down (never up) to MAX_EDGE.
+ *  5. Re-encode as JPEG. sharp writes no metadata unless asked, so the EXIF
  *     block — camera, timestamps, and the **GPS coordinates of someone's
  *     home** — is gone. That matters more here than anywhere: these are
  *     photos of a couple, uploaded to a link that gets forwarded around.
- *  5. Name the file by the hash of the *processed* bytes, which makes the
+ *  6. Name the file by the hash of the *processed* bytes, which makes the
  *     URL immutable (safe to cache forever) and dedupes re-uploads for free.
  */
 export async function storeImage(
@@ -91,6 +154,14 @@ export async function storeImage(
   }
   if (input.byteLength > MAX_UPLOAD_BYTES) {
     throw new UploadError("imagem maior que 15 MB", 413);
+  }
+
+  const format = sniffImageFormat(input);
+  if (!format) {
+    throw new UploadError(
+      "formato não aceito — envie JPG, PNG, WebP ou HEIC",
+      415,
+    );
   }
 
   const pipeline = sharp(input, { limitInputPixels: MAX_INPUT_PIXELS });
@@ -106,17 +177,30 @@ export async function storeImage(
     throw new UploadError("imagem sem dimensões válidas");
   }
 
-  const full = await pipeline
-    .rotate()
-    .resize(MAX_EDGE, MAX_EDGE, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: QUALITY, mozjpeg: true })
-    .toBuffer({ resolveWithObject: true });
+  let full: { data: Buffer; info: OutputInfo };
+  let thumb: Buffer;
+  try {
+    full = await pipeline
+      .rotate()
+      .resize(MAX_EDGE, MAX_EDGE, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: QUALITY, mozjpeg: true })
+      .toBuffer({ resolveWithObject: true });
 
-  const thumb = await sharp(input, { limitInputPixels: MAX_INPUT_PIXELS })
-    .rotate()
-    .resize(THUMB_EDGE, THUMB_EDGE, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 78, mozjpeg: true })
-    .toBuffer();
+    thumb = await sharp(input, { limitInputPixels: MAX_INPUT_PIXELS })
+      .rotate()
+      .resize(THUMB_EDGE, THUMB_EDGE, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 78, mozjpeg: true })
+      .toBuffer();
+  } catch {
+    // A corrupt file can pass metadata() and only die when decoded. So does
+    // every real HEIC: sharp's prebuilt libvips reads the header but ships no
+    // HEVC decoder.
+    throw new UploadError(
+      format === "heic"
+        ? "não consegui converter essa foto HEIC — envie em JPG, PNG ou WebP"
+        : "não consegui ler essa imagem — envie JPG, PNG, WebP ou HEIC",
+    );
+  }
 
   const hash = createHash("sha256")
     .update(full.data)
